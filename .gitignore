@@ -1,0 +1,72 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+*.pyo
+*.pyd
+build/
+dist/
+wheels/
+*.egg-info
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment files with secrets
+.env
+.env.local
+.env.*.local
+
+# Model files (large AI models)
+models/*
+!models/.gitkeep
+
+# Docker volumes and caches
+docker/volumes/
+.docker/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS files
+Thumbs.db
+.directory
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.mypy_cache/
+.ruff_cache/
+
+# UV lock file (optional, comment out if you want to commit it)
+# uv.lock
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Test coverage
+.coverage.*
+coverage.xml
+
+# Build artifacts
+*.pyc
+*.so
+*.dylib
