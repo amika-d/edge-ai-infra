@@ -118,8 +118,9 @@ up-gateway: ## Start only gateway service
 restart-vllm: ## Restart only vLLM service
 	docker-compose restart vllm
 
-restart-gateway: ## Restart only gateway service
-	docker-compose restart gateway
+restart-gateway:
+	docker compose build gateway
+	docker compose up -d gateway
 
 # Quick Commands
 quick-start: build up logs ## Quick start with logs

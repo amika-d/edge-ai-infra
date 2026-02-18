@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Resource limits
     MAX_TOKENS: int = Field(8192, description="Maximum tokens allowed per request")
     MAX_CONCURRENCY: int = Field(30, description="Maximum concurrent requests")
-    REQUEST_TIMEOUT: int = Field(60, description="Request timeout in seconds")
+    REQUEST_TIMEOUT: int = Field(120, description="Request timeout in seconds")
 
     # Infra
     VLLM_API_URL: str = "http://vllm:8000/v1/chat/completions"

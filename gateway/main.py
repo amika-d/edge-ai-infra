@@ -5,7 +5,7 @@ Provides a FastAPI gateway for chat completion requests to the vLLM backend.
 """
 
 from fastapi import FastAPI
-from gateway.auth.routes import router as auth_router
+from gateway.routes import chat_router, metrics_router
 from gateway.core.config import settings
 import uvicorn
 
@@ -24,7 +24,8 @@ async def health():
 
 
 # Register API routes
-app.include_router(auth_router, prefix=settings.API_PREFIX)
+app.include_router(chat_router, prefix=settings.API_PREFIX)
+app.include_router(metrics_router, prefix=settings.API_PREFIX)
 
 
 if __name__ == "__main__":

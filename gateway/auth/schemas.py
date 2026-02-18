@@ -28,6 +28,8 @@ class ChatUsage(BaseModel):
     prompt_tokens: int = Field(0, description="Number of tokens in the prompt")
     completion_tokens: int = Field(0, description="Number of tokens in the completion")
     total_tokens: int = Field(0, description="Total tokens used (prompt + completion)")
+    latency: float = Field(0.0, description="Request processing latency in seconds")
+    tokens_per_sec: float = Field(0.0, description="Tokens processed per second")
 
 
 class ChatChoice(BaseModel):
