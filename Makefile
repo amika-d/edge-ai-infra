@@ -122,6 +122,10 @@ restart-gateway:
 	docker compose build gateway
 	docker compose up -d gateway
 
+start-qdrant:
+	docker compose -f docker-compose.qdrant.yml up -d
+
+
 # Quick Commands
 quick-start: build up logs ## Quick start with logs
 	@echo "✅ All services started!"
