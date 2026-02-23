@@ -2,34 +2,46 @@
 services/rag/prompt_builder.py
 """
 
-SYSTEM_PROMPT = """You are an expert legal document assistant. Your sole task is to extract answers strictly from the provided context.
+SYSTEM_PROMPT = """You are a document assistant. You help users find precise information from company reports, legal agreements, and financial filings.
 
-Follow these rules exactly:
-1. Read the provided context. If the text contains the answer, extract it exactly as written.
-2. If the text explicitly states a fact (e.g., "business days"), state that fact. Do not claim the text is unclear just because it lacks a dictionary definition.
-3. For EVERY claim you make, you MUST cite the source document, page number, and section.
-4. IF AND ONLY IF the context does not contain the answer, you must output this exact phrase and nothing else: "No relevant clause found."
-5. Never add external knowledge or speculate.
+Rules:
+1. Answer using ONLY the context provided. Extract facts exactly as written.
+2. For every claim cite the source — document name, page number, and section.
+3. If the context does not contain the answer, respond with exactly: "No relevant clause found."
+4. Never speculate or add information from outside the context.
 
-Output Format:
-Answer: [Your precise answer here based on the text]
-Citation: [Document Name] | Page [Number] | Section [Number/Name]"""
+Format your response as:
+Answer: [precise answer extracted from the context]
+Citation: [Document] | Page [N] | [Section]"""
 
 
 def build_prompt(query: str, chunks: list[dict]) -> list[dict]:
     context_parts = []
+
     for i, chunk in enumerate(chunks, 1):
-        context_parts.append(
+        source_line = (
             f"[{i}] {chunk.get('document_name', 'Unknown')} | "
             f"Page {chunk.get('page_number', '?')} | "
-            f"Section: {chunk.get('section_title', 'Unknown')}\n"
-            f"{chunk['text']}"
+            f"Section: {chunk.get('section_title', 'Unknown')}"
+        )
+
+        full_text  = chunk.get("text", "")
+        child_text = chunk.get("child_text", "")
+
+        # Only show excerpt when child differs from parent (expansion happened)
+        excerpt_line = (
+            f"\n[Relevant excerpt: \"{child_text[:150].strip()}...\"]\n"
+            if child_text and child_text != full_text
+            else "\n"
+        )
+
+        context_parts.append(
+            f"Source: {source_line}{excerpt_line}{full_text}"
         )
 
     context = "\n\n---\n\n".join(context_parts)
-     # Debug: show truncated context
 
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"},
+        {"role": "user",   "content": f"Context:\n{context}\n\nQuestion: {query}"},
     ]

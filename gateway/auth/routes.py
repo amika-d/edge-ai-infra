@@ -11,7 +11,7 @@ import logging
 import aiohttp
 import asyncio
 from fastapi import APIRouter, HTTPException
-from gateway.auth.schemas import ChatRequest, ChatResponse, ChatChoice, ChatMessage, ChatUsage
+from gateway.schemas.schemas import ChatRequest, ChatResponse, ChatChoice, ChatMessage, ChatUsage
 from gateway.core.config import settings
 
 # Configure module logger

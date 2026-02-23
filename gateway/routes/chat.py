@@ -10,7 +10,7 @@ import uuid
 import logging
 from fastapi import APIRouter, HTTPException
 
-from gateway.auth.schemas import (
+from gateway.schemas.schemas import (
     ChatRequest,
     ChatResponse,
     ChatChoice,
