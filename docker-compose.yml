@@ -8,6 +8,7 @@ services:
     environment:
       MODEL_ID: ${MODEL_ID}
       HF_TOKEN: ${HF_TOKEN}
+      GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION}
     volumes:
       - ./models:/models
     ports:
@@ -17,6 +18,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
+              count: all
               capabilities: [gpu]
     restart: unless-stopped
     networks:
@@ -39,7 +41,9 @@ services:
     environment:
       VLLM_URL: http://vllm:8000/v1/chat/completions
       MAX_CONCURRENCY: 30
-      MAX_TOKENS_LIMIT: 512
+      MAX_TOKENS_LIMIT: 4096
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      QDRANT_URL: ${QDRANT_URL}
     depends_on:
       vllm:
         condition: service_healthy

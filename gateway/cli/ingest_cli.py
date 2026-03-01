@@ -14,8 +14,8 @@ from gateway.services.rag.vector_store import VectorStore
 def main():
     parser = argparse.ArgumentParser(description="Ingest a PDF into the RAG vector store.")
     parser.add_argument("pdf", help="Path to the PDF file")
-    parser.add_argument("--collection", default="legal_docs")
-    parser.add_argument("--qdrant", default="http://localhost:6333")
+    parser.add_argument("--collection", default="uber_rag")
+    parser.add_argument("--qdrant", default=None, help="Qdrant URL (overrides config)")
     args = parser.parse_args()
 
     print(f"📄 Chunking: {args.pdf}")

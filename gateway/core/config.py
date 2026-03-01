@@ -52,15 +52,19 @@ class Settings(BaseSettings):
     # =============================
 
     VLLM_API_URL: str = "http://vllm:8000/v1/chat/completions"
-    MODEL_ID: str = "llama-3b"
-    SERVED_MODEL: str = "llama-3b"
+    MODEL_ID: str = ""
+    SERVED_MODEL: str = ""
 
     # =============================
     # RAG
     # =============================
+    QDRANT_URL: str = ""
+    QDRANT_API_KEY: str = ""
+
 
     
     DATA_PATH: Path = BASE_DIR / "gateway" / "data"
+    MODEL_DIR: Path = BASE_DIR / "models"
 
     # =============================
     # Pydantic config

@@ -9,11 +9,18 @@ from qdrant_client.models import (
     Filter, FieldCondition, MatchValue,
 )
 from .chunker import Chunk
+from gateway.core.config import settings
 
 
 class VectorStore:
-    def __init__(self, url: str = "http://localhost:6333", collection: str = "legal_docs"):
-        self.client = QdrantClient(url=url)
+    def __init__(self, url: str | None = None, collection: str=None, api_key: str | None = None):
+        self.url = url or settings.QDRANT_URL
+        self.api_key = api_key or settings.QDRANT_API_KEY
+        self.client = QdrantClient(
+            url=self.url, 
+            api_key=self.api_key,
+            timeout=60  # Increase timeout to 60 seconds
+        )
         self.collection = collection
 
     def create_collection(self, vector_size: int):
