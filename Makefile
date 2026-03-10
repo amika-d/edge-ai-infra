@@ -135,3 +135,6 @@ rebuild: down build up ## Full rebuild and restart
 # Environment
 env-check: ## Check if .env file exists
 	@if [ -f .env ]; then echo "✅ .env file found"; else echo "❌ .env file missing - copy .env.example"; fi
+
+ingest:
+	uv run gateway/cli/ingest_cli.py gateway/data/docs/uber-annual-report.pdf --collection uber
