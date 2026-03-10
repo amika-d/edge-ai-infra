@@ -86,7 +86,7 @@ async def chat_loop(args):
 
     try:
         embedder = Embedder()
-        logger.info(f"Embedder ready — model: {embedder.model.get_sentence_embedding_dimension()}d")
+        logger.info(f"Embedder ready — model: {embedder.dimension}d")
     except Exception as e:
         logger.error(f"Failed to load embedding model: {e}")
         sys.exit(1)
@@ -174,9 +174,9 @@ async def chat_loop(args):
 def main():
     parser = argparse.ArgumentParser(description="Chat with your legal documents.")
     parser.add_argument("--doc",        default="uber-annual-report",                   help="document_id to scope queries (must match indexed name)")
-    parser.add_argument("--collection", default="uber-report")
-    parser.add_argument("--qdrant",     default="http://localhost:6333")
-    parser.add_argument("--top-k",      type=int, default=5)
+    parser.add_argument("--collection", default="uber", help="Qdrant collection name (must match ingest_cli)")
+    parser.add_argument("--qdrant",     default=None, help="Qdrant URL (overrides .env)")
+    parser.add_argument("--top-k",      type=int, default=2)
     parser.add_argument("--max-tokens", type=int, default=512)
     args = parser.parse_args()
 
