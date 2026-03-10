@@ -1,29 +1,23 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
-import { Send } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { ArrowUp } from 'lucide-react';
+import { Textarea } from '@/components/ui/textarea';
+import { Button } from '@/components/ui/button';
 
 interface ChatInputProps {
   onSend: (message: string) => void;
   isLoading: boolean;
-  characterCount?: number;
 }
 
-export function ChatInput({ onSend, isLoading, characterCount = 0 }: ChatInputProps) {
+export function ChatInput({ onSend, isLoading }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-resize textarea
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 150) + 'px';
-    }
-  }, [message]);
-
-  const handleSend = () => {
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (message.trim() && !isLoading) {
-      onSend(message);
+      onSend(message.trim());
       setMessage('');
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
@@ -31,43 +25,42 @@ export function ChatInput({ onSend, isLoading, characterCount = 0 }: ChatInputPr
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   return (
-    <div className="border-t border-zinc-800 bg-zinc-950 p-3 sm:p-4">
-      <div className="space-y-2 sm:space-y-3">
-        <div className="relative">
-          <textarea
-            ref={textareaRef}
-            value={message}
-            onChange={e => setMessage(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask something... (Shift+Enter for new line)"
-            className="w-full resize-none px-3 sm:px-4 py-2 sm:py-3 bg-zinc-900 border border-zinc-800 rounded-lg text-sm sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-700 transition-colors focus:ring-1 focus:ring-blue-500/20 max-h-24"
-            rows={1}
-            disabled={isLoading}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!message.trim() || isLoading}
-            className="absolute right-2 sm:right-3 bottom-2 sm:bottom-3 p-1.5 sm:p-2 bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-lg transition-colors"
-          >
-            <Send className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="hidden sm:flex items-center justify-between text-xs">
-          <span className="text-zinc-500">
-            {message.length > 0 && `${message.length} characters`}
-          </span>
-          <span className="text-zinc-600">
-            Press Shift+Enter for new line
-          </span>
+    <div className="fixed bottom-4 left-0 right-0 px-4 pointer-events-none">
+      <div className="mx-auto max-w-2xl pointer-events-auto">
+        <div className="backdrop-blur-xl bg-black/30 border border-white/10 rounded-2xl shadow-2xl shadow-black/50">
+          <form onSubmit={handleSubmit} className="flex items-end gap-3 p-3">
+            <Textarea
+              ref={textareaRef}
+              value={message}
+              onChange={e => setMessage(e.target.value)}
+              onInput={e => {
+                const t = e.target as HTMLTextAreaElement;
+                t.style.height = 'auto';
+                t.style.height = Math.min(t.scrollHeight, 128) + 'px';
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit();
+                }
+              }}
+              placeholder="Ask anything..."
+              rows={1}
+              disabled={isLoading}
+              className="min-h-10 flex-1 bg-white/5 border border-white/10 text-zinc-100 placeholder-zinc-400 resize-none focus-visible:ring-1 focus-visible:ring-white/20 focus-visible:border-white/20 rounded-xl transition-all duration-200 hover:bg-white/10"
+            />
+            <Button
+              type="submit"
+              disabled={!message.trim() || isLoading}
+              className="h-10 w-10 p-0 shrink-0 bg-white/5 border border-white/20 hover:bg-white/20 disabled:opacity-30 transition-all duration-200 rounded-xl"
+            >
+              <ArrowUp className="w-4 h-4 text-zinc-300" />
+            </Button>
+          </form>
+          <p className="text-center text-[10px] text-white/40 pb-2">
+            AI can make mistakes. Check important info.
+          </p>
         </div>
       </div>
     </div>

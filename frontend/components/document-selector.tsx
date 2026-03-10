@@ -10,10 +10,7 @@ interface DocumentSelectorProps {
 }
 
 const DEMO_DOCUMENTS: Document[] = [
-  { id: '1', name: 'API Documentation', type: 'markdown' },
-  { id: '2', name: 'User Guide', type: 'pdf' },
-  { id: '3', name: 'Architecture Design', type: 'markdown' },
-  { id: '4', name: 'Privacy Policy', type: 'text' },
+  { id: 'uber-annual-report', name: 'Uber Annual Report', type: 'pdf' },
 ];
 
 export function DocumentSelector({ selectedDocuments, onDocumentsChange }: DocumentSelectorProps) {

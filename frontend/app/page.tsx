@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Menu } from 'lucide-react';
 import { ChatSidebar } from '@/components/chat-sidebar';
 import { ChatMessages } from '@/components/chat-messages';
 import { ChatInput } from '@/components/chat-input';
@@ -10,7 +9,7 @@ import type { Document } from '@/lib/types';
 
 export default function Home() {
   const chat = useChat();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
   // Check if mobile on mount
@@ -50,6 +49,7 @@ export default function Home() {
         onNewChat={handleNewChat}
         isOpen={sidebarOpen}
         onClose={handleCloseSidebar}
+        onToggle={() => setSidebarOpen(o => !o)}
       />
 
       {/* Main Chat Area */}
@@ -62,20 +62,26 @@ export default function Home() {
               onClick={() => setSidebarOpen(true)}
               className="p-2 hover:bg-zinc-800 rounded transition-colors"
             >
-              <Menu className="w-5 h-5 text-zinc-400" />
+              
             </button>
           </div>
         )}
 
-        {/* Messages Area */}
-        <ChatMessages messages={chat.messages} isLoading={chat.isLoading} />
+       
+        <div className="flex-1 overflow-y-auto px-3">
+  <div className="max-w-4xl mx-auto">
+    <ChatMessages messages={chat.messages} isLoading={chat.isLoading} />
+  </div>
+</div>
 
-        {/* Input Area */}
-        <ChatInput
-          onSend={handleSendMessage}
-          isLoading={chat.isLoading}
-          characterCount={0}
-        />
+<div className="px-3 pb-4">
+  <div className="max-w-4xl mx-auto">
+    <ChatInput
+      onSend={handleSendMessage}
+      isLoading={chat.isLoading}
+    />
+  </div>
+</div>
       </main>
     </div>
   );
