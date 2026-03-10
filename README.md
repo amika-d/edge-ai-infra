@@ -17,6 +17,8 @@ A production-grade AI infrastructure stack built to demonstrate what's possible 
 
 ## Architecture
 
+![Edge AI Architecture](docs/architecture.png)
+
 ```
 Browser (Next.js)
       ↓
