@@ -1,538 +1,331 @@
 """
-Hierarchical document chunking for RAG systems.
+services/rag/chunker.py
 
-This module provides a hybrid chunking strategy that creates parent-child
-chunk relationships for improved context retrieval. Parent chunks maintain
-full section context while child chunks enable precise semantic search.
+Hierarchical parent-child chunker using Docling for PDF parsing.
 
 Strategy:
-  PARENT chunks (800-1000 tokens) — full sections via HierarchicalChunker
-                                     stored for context expansion at query time
-  CHILD chunks (200-400 tokens) — token-bounded via HybridChunker
-                                   embedded + stored for similarity search
+  Docling parses PDF → detects headings, tables, layout
+  Parent chunks  → full document sections (800-1000 tokens)
+  Child chunks   → smaller slices of each parent (200-350 tokens)
+  
+  Children carry:
+    - parent_id    → pointer back to parent
+    - parent_text  → full section text (stored in payload, not as vector)
+    - document_id  → for Qdrant filtering
+    - page_number  → for citations
+    - section_title → heading Docling detected
 
-Query flow:
-  1. Search child chunks → precise semantic match
-  2. Retrieve parent_id → fetch parent chunk for full context
-  3. Send parent text to LLM → complete, coherent answer
+Only CHILD chunks get embedded as vectors.
+Parent text rides along in the payload for context expansion at query time.
 
-This prevents "context dilution" where a specific figure loses its meaning
-because the surrounding section was cut off.
-
-Classes:
-    HierarchicalChunkConfig: Configuration for chunking behavior
-    ParentChunk: Full section chunk for context expansion
-    Chunk: Embeddable child chunk with parent reference
-    HierarchicalDocChunker: Main chunking implementation
-
-Functions:
-    chunk_pdf: Convenience function for single-file processing
-
-Example:
-    >>> config = HierarchicalChunkConfig.annual_report()
-    >>> chunker = HierarchicalDocChunker(config)
-    >>> chunks = chunker.chunk_pdf("document.pdf")
+What changed vs old AgreementChunker:
+  - Works for ANY document type (not just agreements)
+  - Two config presets: agreement() and annual_report()
+  - chunk_type field added ("child") for payload index
+  - Cleaner token splitting using transformers tokenizer
+  - document_id derived from filename (no manual passing)
 """
 from __future__ import annotations
 
+import hashlib
 import logging
-import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union, Generator
 
-from docling.document_converter import DocumentConverter, PdfFormatOption
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.datamodel.base_models import InputFormat, ConversionStatus
-from docling.chunking import HybridChunker
-from docling_core.transforms.chunker import HierarchicalChunker
-from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
-from transformers import AutoTokenizer
-
-# Configure module logger
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-# Token estimation and splitting
-DEFAULT_WORD_TO_TOKEN_RATIO = 0.75
-DEFAULT_OVERLAP_RATIO = 0.15
-MIN_EXCERPT_LENGTH = 150
-UUID_LENGTH = 8
-
-# Default model
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
 @dataclass
 class HierarchicalChunkConfig:
     """
-    Configuration for hybrid hierarchical chunking.
-
-    This class defines chunking parameters and provides preset configurations
-    optimized for different document types.
-
-    Attributes:
-        parent_max_tokens: Token ceiling for parent chunks (broad context)
-        child_max_tokens: Token ceiling for child chunks (retrieval units)
-        min_chunk_words: Skip fragments below this word count
-        do_ocr: Enable OCR for scanned documents
-        do_table_structure: Enable TableFormer for financial documents
-        embedding_model: HuggingFace model ID for tokenizer
-
-    Raises:
-        ValueError: If configuration parameters are invalid
+    Universal config — works for any document type.
+    Docling handles structural understanding (headings, tables, layout).
+    We just apply consistent token windows on top.
+    No per-document-type presets needed.
     """
-    parent_max_tokens: int = 1000
-    child_max_tokens: int = 300
-    min_chunk_words: int = 30
-    do_ocr: bool = False
-    do_table_structure: bool = True
-    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    # Parent sizing
+    parent_max_tokens: int = 900
+    parent_min_words:  int = 30
 
-    def __post_init__(self) -> None:
-        """Validate configuration after initialization."""
-        if self.parent_max_tokens <= 0:
-            raise ValueError("parent_max_tokens must be positive")
-        if self.child_max_tokens <= 0:
-            raise ValueError("child_max_tokens must be positive")
-        if self.child_max_tokens >= self.parent_max_tokens:
-            raise ValueError("child_max_tokens must be less than parent_max_tokens")
-        if self.min_chunk_words < 0:
-            raise ValueError("min_chunk_words cannot be negative")
-        if not self.embedding_model.strip():
-            raise ValueError("embedding_model cannot be empty")
+    # Child sizing
+    child_max_tokens:  int = 300
+    child_min_words:   int = 15
+    child_overlap:     int = 30   # token overlap between siblings
 
-    @classmethod
-    def agreement(cls) -> "HierarchicalChunkConfig":
-        """
-        Configuration for short legal contracts.
-        
-        Optimized for lease agreements, NDAs, employment agreements.
-        Uses smaller chunks and disables table processing for text-focused documents.
-        
-        Returns:
-            Configuration optimized for legal agreements
-        """
-        return cls(
-            parent_max_tokens=800,
-            child_max_tokens=250,
-            min_chunk_words=20,
-            do_table_structure=False,
-        )
-
-    @classmethod
-    def annual_report(cls) -> "HierarchicalChunkConfig":
-        """
-        Configuration for large financial filings.
-        
-        Optimized for SEC filings, 10-K forms, annual reports.
-        Enables table processing for financial statements.
-        
-        Returns:
-            Configuration optimized for financial documents
-        """
-        return cls(
-            parent_max_tokens=1000,
-            child_max_tokens=350,
-            min_chunk_words=40,
-            do_table_structure=True,
-        )
-
-    @classmethod
-    def regulatory(cls) -> "HierarchicalChunkConfig":
-        """
-        Configuration for regulatory and compliance documents.
-        
-        Optimized for dense technical documents with complex structure.
-        
-        Returns:
-            Configuration optimized for regulatory documents
-        """
-        return cls(
-            parent_max_tokens=900,
-            child_max_tokens=300,
-            min_chunk_words=30,
-            do_table_structure=True,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Data Models
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ParentChunk:
-    """
-    Full section chunk for context expansion.
-    
-    Parent chunks are NOT embedded but stored in Qdrant payload.
-    Retrieved via parent_id reference from child chunks.
-    
-    Attributes:
-        parent_id: Unique identifier for this parent chunk
-        text: Full section text content
-        metadata: Document metadata including provenance information
-    """
-    parent_id: str
-    text: str
-    metadata: Dict[str, Any]
+    # Embedding model for token counting
+    embedding_model: str = "BAAI/bge-base-en-v1.5"
 
 
 @dataclass
 class Chunk:
-    """
-    Embeddable child chunk with parent reference.
-    
-    Child chunks are embedded and stored as vectors in Qdrant.
-    Contains parent_id for context expansion during retrieval.
-    
-    Attributes:
-        chunk_id: Unique identifier for this chunk
-        text: Chunk text content for embedding
-        metadata: Includes parent_id and parent_text for context expansion
-    """
-    chunk_id: str
-    text: str
-    metadata: Dict[str, Any]
+    text:          str
+    document_id:   str
+    document_name: str
+    page_number:   int
+    section_title: str
+    headings:      list[str]
+    chunk_index:   int
+    parent_id:     str
+    parent_text:   str
+    chunk_type:    str = "child"   # always "child" — parents live in payload only
 
+    def to_dict(self) -> dict:
+        return {
+            "text":          self.text,
+            "document_id":   self.document_id,
+            "document_name": self.document_name,
+            "page_number":   self.page_number,
+            "section_title": self.section_title,
+            "headings":      self.headings,
+            "chunk_index":   self.chunk_index,
+            "parent_id":     self.parent_id,
+            "parent_text":   self.parent_text,
+            "chunk_type":    self.chunk_type,
+        }
 
-# ---------------------------------------------------------------------------
-# Core Chunker
-# ---------------------------------------------------------------------------
 
 class HierarchicalDocChunker:
     """
-    Hybrid hierarchical chunker producing parent-child chunk pairs.
-    
-    This class implements a two-stage chunking strategy:
-    1. Create parent chunks from document structure (no token limits)
-    2. Split parents into token-bounded child chunks for embedding
-    
-    Args:
-        config: Chunking configuration, defaults to base config
-        
-    Raises:
-        ValueError: If configuration is invalid
-        RuntimeError: If component initialization fails
-        
-    Example:
-        >>> # Annual report processing
-        >>> config = HierarchicalChunkConfig.annual_report()
-        >>> chunker = HierarchicalDocChunker(config)
-        >>> chunks = chunker.chunk_pdf("report.pdf")
-        
-        >>> # Stream processing for large files
-        >>> for chunk in chunker.chunk_pdf_stream("big_report.pdf"):
-        ...     vector_store.add(chunk)
+    Parses a PDF with Docling, produces parent sections,
+    splits each into child chunks, returns list of Chunk dicts
+    ready for embedding.
     """
 
-    def __init__(self, config: Optional[HierarchicalChunkConfig] = None) -> None:
+    def __init__(self, config: HierarchicalChunkConfig | None = None):
         self.config = config or HierarchicalChunkConfig()
-        
+        self._tokenizer = self._load_tokenizer()
+
+    def _load_tokenizer(self):
         try:
-            self._initialize_components()
-            logger.info("Initialized HierarchicalDocChunker with model: %s", 
-                       self.config.embedding_model)
+            from transformers import AutoTokenizer
+            tok = AutoTokenizer.from_pretrained(self.config.embedding_model)
+            logger.info(f"Tokenizer loaded: {self.config.embedding_model}")
+            return tok
         except Exception as e:
-            logger.error("Failed to initialize chunker components: %s", e)
-            raise RuntimeError(f"Chunker initialization failed: {e}") from e
+            logger.warning(f"Tokenizer load failed ({e}) — falling back to word count")
+            return None
 
-    def _initialize_components(self) -> None:
-        """Initialize document converter and chunker components."""
-        self._converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(
-                    pipeline_options=PdfPipelineOptions(
-                        do_ocr=self.config.do_ocr,
-                        do_table_structure=self.config.do_table_structure,
-                        generate_page_images=False,
-                    )
-                )
-            }
-        )
+    def _token_count(self, text: str) -> int:
+        if self._tokenizer:
+            return len(self._tokenizer.encode(text, add_special_tokens=False))
+        return len(text.split())  # fallback: word count
 
-        tokenizer = HuggingFaceTokenizer(
-            tokenizer=AutoTokenizer.from_pretrained(self.config.embedding_model),
-            max_tokens=self.config.child_max_tokens,
-        )
+    # ── Public API ────────────────────────────────────────────────────────
 
-        # HierarchicalChunker for structure-based parent chunks
-        self._hier_chunker = HierarchicalChunker()
+    def chunk_pdf(self, pdf_path: str) -> list[dict]:
+        """
+        Main entry point.
+        Returns list of chunk dicts ready for Embedder.embed_chunks().
+        """
+        path          = Path(pdf_path)
+        document_id   = path.stem.lower().replace(" ", "-")
+        document_name = path.name
 
-        # HybridChunker for token-bounded child chunks
-        self._hybrid_chunker = HybridChunker(
-            tokenizer=tokenizer,
+        logger.info(f"Parsing PDF: {path.name}")
+        docling_chunks = self._parse_with_docling(str(path))
+        logger.info(f"  Docling produced {len(docling_chunks)} raw sections")
+
+        parents = self._build_parents(docling_chunks, document_id, document_name)
+        logger.info(f"  Built {len(parents)} parent sections")
+
+        children = self._build_children(parents)
+        logger.info(f"  Split into {len(children)} child chunks")
+
+        return [c.to_dict() for c in children]
+
+    # ── Docling parsing ───────────────────────────────────────────────────
+
+    def _parse_with_docling(self, pdf_path: str) -> list[dict]:
+        """
+        Use Docling HybridChunker to parse PDF into structured sections.
+        Each section has: text, page_number, headings.
+        """
+        from docling.document_converter import DocumentConverter
+        from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
+        from docling_core.transforms.chunker.hierarchical_chunker import HierarchicalChunker
+
+        converter = DocumentConverter()
+        result    = converter.convert(pdf_path)
+        doc       = result.document
+
+        # Use Docling's HybridChunker for initial section detection
+        chunker = HybridChunker(
+            tokenizer=self.config.embedding_model,
+            max_tokens=self.config.parent_max_tokens,
             merge_peers=True,
         )
 
-    # ------------------------------------------------------------------ public
+        raw_chunks = []
+        for chunk in chunker.chunk(doc):
+            meta = chunk.meta
 
-    def chunk_pdf(self, path: Union[str, Path]) -> List[Chunk]:
-        """
-        Parse and chunk a PDF into parent-child chunk pairs.
-        
-        Args:
-            path: Path to the PDF file to process
-            
-        Returns:
-            List of child chunks with parent context in metadata
-            
-        Raises:
-            FileNotFoundError: If PDF file doesn't exist
-            RuntimeError: If document conversion fails
-        """
-        path_obj = Path(path)
-        
-        if not path_obj.exists():
-            raise FileNotFoundError(f"PDF file not found: {path_obj}")
-            
-        doc_name = path_obj.name
-        doc_id = path_obj.stem
+            # Extract page number — use first page reference if available
+            page_num = 0
+            if hasattr(meta, "doc_items") and meta.doc_items:
+                for item in meta.doc_items:
+                    if hasattr(item, "prov") and item.prov:
+                        page_num = item.prov[0].page_no
+                        break
 
-        logger.info("Converting document: %s", doc_name)
-        result = self._converter.convert(str(path_obj))
+            # Extract headings from metadata
+            headings = []
+            if hasattr(meta, "headings") and meta.headings:
+                headings = [str(h) for h in meta.headings]
 
-        if result.status == ConversionStatus.FAILURE:
-            errors = "; ".join(e.error_message for e in result.errors)
-            logger.error("Document conversion failed for '%s': %s", doc_name, errors)
-            raise RuntimeError(f"Docling failed for '{doc_name}': {errors}")
+            section_title = headings[-1] if headings else "General"
 
-        dl_doc = result.document
-
-        # Step 1: Build parent chunks from document hierarchy
-        logger.debug("Building parent chunks using HierarchicalChunker")
-        parent_chunks = self._build_parents(dl_doc, doc_id, doc_name)
-        logger.info("Built %d parent sections", len(parent_chunks))
-
-        # Step 2: Split each parent into child chunks
-        logger.debug("Splitting into child chunks (max=%d tokens)", 
-                    self.config.child_max_tokens)
-        child_chunks = self._build_children(parent_chunks, doc_id, doc_name)
-        logger.info("Generated %d child chunks", len(child_chunks))
-
-        return child_chunks
-
-    def chunk_pdf_stream(self, path: Union[str, Path]) -> Generator[Chunk, None, None]:
-        """
-        Generator version that yields child chunks one by one.
-        
-        Useful for processing large documents without loading all chunks into memory.
-        
-        Args:
-            path: Path to the PDF file to process
-            
-        Yields:
-            Individual child chunks
-            
-        Raises:
-            FileNotFoundError: If PDF file doesn't exist
-            RuntimeError: If document conversion fails
-        """
-        for chunk in self.chunk_pdf(path):
-            yield chunk
-
-    # ----------------------------------------------------------------- private
-
-    def _build_parents(self, dl_doc: Any, doc_id: str, doc_name: str) -> List[ParentChunk]:
-        """
-        Create full-section parent chunks using HierarchicalChunker.
-        
-        These chunks capture complete context without token limits
-        and serve as the source for child chunk generation.
-        
-        Args:
-            dl_doc: Docling document object
-            doc_id: Document identifier
-            doc_name: Document name for metadata
-            
-        Returns:
-            List of parent chunks with complete section content
-        """
-        parents = []
-        for raw in self._hier_chunker.chunk(dl_doc):
-            text = raw.text.strip()
-            if not text or len(text.split()) < self.config.min_chunk_words:
+            text = chunk.text.strip()
+            if not text:
                 continue
 
-            page_number = self._extract_page(raw)
-            headings = getattr(raw.meta, "headings", []) or []
-            section_title = headings[0] if headings else "Unknown Section"
-            parent_id = f"{doc_id}_parent_{uuid.uuid4().hex[:UUID_LENGTH]}"
+            raw_chunks.append({
+                "text":          text,
+                "page_number":   page_num,
+                "headings":      headings,
+                "section_title": section_title,
+            })
 
-            parents.append(ParentChunk(
-                parent_id=parent_id,
-                text=text,
-                metadata={
-                    "document_id": doc_id,
-                    "document_name": doc_name,
-                    "page_number": page_number,
-                    "section_title": section_title,
-                    "headings": headings,
-                },
-            ))
+        return raw_chunks
+
+    # ── Parent building ───────────────────────────────────────────────────
+
+    def _build_parents(
+        self,
+        raw_chunks:    list[dict],
+        document_id:   str,
+        document_name: str,
+    ) -> list[dict]:
+        """
+        Merge small adjacent sections into parents up to parent_max_tokens.
+        Each parent gets a stable parent_id hash.
+        """
+        parents = []
+        buffer_chunks: list[dict] = []
+        buffer_tokens = 0
+
+        def flush_buffer():
+            if not buffer_chunks:
+                return
+            merged_text = "\n\n".join(c["text"] for c in buffer_chunks)
+            word_count  = len(merged_text.split())
+
+            if word_count < self.config.parent_min_words:
+                return  # too short — skip
+
+            # Stable ID from content hash
+            parent_id = f"{document_id}_parent_{hashlib.md5(merged_text[:200].encode()).hexdigest()[:8]}"
+
+            parents.append({
+                "text":          merged_text,
+                "document_id":   document_id,
+                "document_name": document_name,
+                "page_number":   buffer_chunks[0]["page_number"],
+                "section_title": buffer_chunks[0]["section_title"],
+                "headings":      buffer_chunks[0]["headings"],
+                "parent_id":     parent_id,
+            })
+
+        for chunk in raw_chunks:
+            tokens = self._token_count(chunk["text"])
+
+            # If adding this chunk exceeds parent limit — flush first
+            if buffer_tokens + tokens > self.config.parent_max_tokens and buffer_chunks:
+                flush_buffer()
+                buffer_chunks = []
+                buffer_tokens = 0
+
+            buffer_chunks.append(chunk)
+            buffer_tokens += tokens
+
+        flush_buffer()
         return parents
 
-    def _build_children(
-        self,
-        parents: List[ParentChunk],
-        doc_id: str,
-        doc_name: str,
-    ) -> List[Chunk]:
+    # ── Child building ────────────────────────────────────────────────────
+
+    def _build_children(self, parents: list[dict]) -> list[Chunk]:
         """
-        Split parent chunks into token-bounded child chunks.
-        
-        Each child chunk carries its parent_id and parent_text
-        to enable context expansion during retrieval.
-        
-        Args:
-            parents: List of parent chunks to split
-            doc_id: Document identifier
-            doc_name: Document name for metadata
-            
-        Returns:
-            List of child chunks with parent references
+        Split each parent into overlapping child chunks.
+        Children embed as vectors; parent_text rides in payload.
         """
-        children = []
-        child_index = 0
+        children    = []
+        chunk_index = 0
 
         for parent in parents:
-            sub_texts = self._token_split(parent.text)
+            child_texts = self._token_split(
+                parent["text"],
+                max_tokens=self.config.child_max_tokens,
+                overlap=self.config.child_overlap,
+            )
 
-            for sub_text in sub_texts:
-                if len(sub_text.split()) < self.config.min_chunk_words:
-                    continue
-
-                chunk_id = f"{doc_id}_child_{uuid.uuid4().hex[:UUID_LENGTH]}"
+            for child_text in child_texts:
+                word_count = len(child_text.split())
+                if word_count < self.config.child_min_words:
+                    continue  # skip noise
 
                 children.append(Chunk(
-                    chunk_id=chunk_id,
-                    text=sub_text,
-                    metadata={
-                        # Core provenance
-                        "document_id": parent.metadata["document_id"],
-                        "document_name": parent.metadata["document_name"],
-                        "page_number": parent.metadata["page_number"],
-                        "section_title": parent.metadata["section_title"],
-                        "headings": parent.metadata["headings"],
-                        "chunk_index": child_index,
-                        # Parent reference for context expansion
-                        "parent_id": parent.parent_id,
-                        "parent_text": parent.text,
-                    },
+                    text          = child_text,
+                    document_id   = parent["document_id"],
+                    document_name = parent["document_name"],
+                    page_number   = parent["page_number"],
+                    section_title = parent["section_title"],
+                    headings      = parent["headings"],
+                    chunk_index   = chunk_index,
+                    parent_id     = parent["parent_id"],
+                    parent_text   = parent["text"],
+                    chunk_type    = "child",
                 ))
-                child_index += 1
+                chunk_index += 1
 
         return children
 
-    def _token_split(self, text: str) -> List[str]:
+    def _token_split(
+        self,
+        text:       str,
+        max_tokens: int,
+        overlap:    int = 30,
+    ) -> list[str]:
         """
-        Split text into child-sized chunks respecting token limits.
-        
-        Uses word-based approximation with configurable overlap to maintain
-        context continuity between adjacent chunks.
-        
-        Args:
-            text: Text to split into smaller chunks
-            
-        Returns:
-            List of text chunks within token limits
+        Split text into overlapping token windows.
+        Falls back to word splitting if tokenizer unavailable.
         """
-        words = text.split()
-        max_words = int(self.config.child_max_tokens * DEFAULT_WORD_TO_TOKEN_RATIO)
-        overlap = int(max_words * DEFAULT_OVERLAP_RATIO)
+        if self._tokenizer:
+            return self._tokenizer_split(text, max_tokens, overlap)
+        return self._word_split(text, max_tokens, overlap)
 
-        if len(words) <= max_words:
+    def _tokenizer_split(self, text: str, max_tokens: int, overlap: int) -> list[str]:
+        token_ids = self._tokenizer.encode(text, add_special_tokens=False)
+
+        if len(token_ids) <= max_tokens:
             return [text]
 
         chunks = []
-        start = 0
+        start  = 0
+        step   = max_tokens - overlap
+
+        while start < len(token_ids):
+            end    = min(start + max_tokens, len(token_ids))
+            chunk  = self._tokenizer.decode(token_ids[start:end], skip_special_tokens=True)
+            chunks.append(chunk.strip())
+            if end == len(token_ids):
+                break
+            start += step
+
+        return [c for c in chunks if c]
+
+    def _word_split(self, text: str, max_tokens: int, overlap: int) -> list[str]:
+        words  = text.split()
+        if len(words) <= max_tokens:
+            return [text]
+
+        chunks = []
+        start  = 0
+        step   = max_tokens - overlap
+
         while start < len(words):
-            end = min(start + max_words, len(words))
+            end = min(start + max_tokens, len(words))
             chunks.append(" ".join(words[start:end]))
-            start += max_words - overlap
+            if end == len(words):
+                break
+            start += step
 
         return chunks
-
-    @staticmethod
-    def _extract_page(raw: Any) -> Optional[int]:
-        """
-        Extract page number from raw chunk metadata.
-        
-        Args:
-            raw: Raw chunk from HierarchicalChunker
-            
-        Returns:
-            Page number if available, None otherwise
-        """
-        doc_items = getattr(raw.meta, "doc_items", [])
-        if doc_items:
-            prov = getattr(doc_items[0], "prov", [])
-            if prov:
-                return getattr(prov[0], "page_no", None)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Keep AgreementChunker as a simple alias for backward compatibility
-# ---------------------------------------------------------------------------
-
-class AgreementChunker(HierarchicalDocChunker):
-    """
-    Specialized chunker for short legal agreements.
-    
-    Backward-compatible alias that uses agreement-optimized configuration
-    by default. Suitable for contracts, NDAs, and employment agreements.
-    
-    Args:
-        config: Optional custom configuration, defaults to agreement preset
-    """
-    def __init__(self, config: Optional[HierarchicalChunkConfig] = None) -> None:
-        super().__init__(config or HierarchicalChunkConfig.agreement())
-
-
-# ---------------------------------------------------------------------------
-# Convenience function
-# ---------------------------------------------------------------------------
-
-def chunk_pdf(
-    path: Union[str, Path],
-    config: Optional[HierarchicalChunkConfig] = None,
-) -> List[Chunk]:
-    """
-    Convenience function for single-file PDF processing.
-    
-    Args:
-        path: Path to PDF file
-        config: Chunking configuration, defaults to base config
-        
-    Returns:
-        List of child chunks with parent context
-        
-    Raises:
-        FileNotFoundError: If PDF file doesn't exist
-        RuntimeError: If document conversion fails
-        
-    Example:
-        >>> from gateway.services.rag.chunker import chunk_pdf, HierarchicalChunkConfig
-        
-        >>> # Process annual report
-        >>> chunks = chunk_pdf("annual-report.pdf", 
-        ...                   HierarchicalChunkConfig.annual_report())
-        
-        >>> # Process legal agreement  
-        >>> chunks = chunk_pdf("contract.pdf",
-        ...                   HierarchicalChunkConfig.agreement())
-        
-        >>> # Inspect results
-        >>> for chunk in chunks[:3]:
-        ...     print(f"Page {chunk.metadata['page_number']} | 
-        ...            {chunk.metadata['section_title']}")
-        ...     print(f"Child: {chunk.text[:150]}")
-    """
-    return HierarchicalDocChunker(config).chunk_pdf(path)
