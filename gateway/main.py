@@ -5,9 +5,33 @@ Provides a FastAPI gateway for chat completion requests to the vLLM backend.
 """
 
 from fastapi import FastAPI
-from gateway.routes import chat_router, metrics_router
+from contextlib import asynccontextmanager
+import logging
+import sys
+from gateway.routes import chat_router, metrics_router, rag_router
 from gateway.core.config import settings
 import uvicorn
+
+
+def _setup_logging():
+    logging.basicConfig(
+        level=settings.LOG_LEVEL,
+        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _setup_logging()
+    yield
+
+
+
+
+
+
 
 # Initialize FastAPI application
 app = FastAPI(
@@ -26,7 +50,7 @@ async def health():
 # Register API routes
 app.include_router(chat_router, prefix=settings.API_PREFIX)
 app.include_router(metrics_router, prefix=settings.API_PREFIX)
-
+app.include_router(rag_router, prefix=settings.API_PREFIX)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
