@@ -46,10 +46,10 @@ class Embedder:
     ):  
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Loading dense model: {dense_model} on device: {device}")
-        self._dense = SentenceTransformer(dense_model, device=device, cache_folder=str(CACHE_DIR))
+        self._dense = SentenceTransformer(dense_model, device=device, cache_folder=str(CACHE_DIR), local_files_only=True)
 
         logger.info(f"Loading sparse model: {sparse_model}")
-        self._sparse = SparseTextEmbedding(model_name=sparse_model, cache_dir=str(CACHE_DIR))
+        self._sparse = SparseTextEmbedding(model_name=sparse_model, cache_dir=str(CACHE_DIR), local_files_only=True)
 
         self.dimension = self._dense.get_sentence_embedding_dimension()
         logger.info(f"Dense dimension: {self.dimension}")
